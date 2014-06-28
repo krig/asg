@@ -2,28 +2,61 @@
 """asg
 
 Usage:
-  asg [-o <dir>] [--serve|--watch] [--port=<port>] [<config>]
+  asg [-v] [--output=<dir>]
+      [--serve|--watch] [--port=<port>]
+      [<config>]
 
 Options:
-  -h --help      Show this screen.
-  --version      Show version.
-  -o <dir>       Output directory (default: output/)
-  --serve        Launch server.
-  --watch        Launch server, watch content for changes.
-  --port=<port>  Server port (default: 4763)
+  -h --help          Show this screen.
+  --version          Show version.
+  -v --verbose       Print debug output.
+  -o --output=<dir>  Output directory [default: output/].
+  -s --serve         Launch server.
+  -w --watch         Launch server, watch content for changes.
+  -p --port=<port>   Server port [default: 4763].
 """
 from docopt import docopt
-
 import os
 import sys
 import yaml
 import jinja2
+import logging
+FORMAT = '%(levelname)-8s %(asctime)-15s: %(message)s'
+logging.basicConfig(format=FORMAT)
+log = logging.getLogger(__name__)
 
+
+class Asg(object):
+    def __init__(self, args, config):
+        self.title = config['title']
+        self.layouts = config['layouts']
+        self.content = config['content']
+        self.output = args['--output']
+
+    def build(self):
+        if not os.path.isdir(self.output):
+            os.mkdir(self.output)
+        pass
 
 
 def main(args):
-    config = yaml.load(args.config)
-    print config
+    if args['<config>'] is None:
+        args['<config>'] = './config.yaml'
+    if args['--verbose']:
+        log.setLevel(logging.DEBUG)
+    log.debug("%s" % ', '.join('%s=%s' % (k, v) for k, v in args.iteritems()))
+    config = yaml.load(open(args['<config>']))
+    asg = Asg(args, config)
+    asg.build()
+    if args['--serve']:
+        import SimpleHTTPServer
+        import SocketServer
+        os.chdir(args['--output'])
+        PORT = int(args['--port'])
+        print "Serving on 0.0.0.0:%s" % (PORT)
+        handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+        httpd = SocketServer.TCPServer(("", PORT), handler)
+        httpd.serve_forever()
 
 if __name__ == "__main__":
     args = docopt(__doc__, version="asg 0.1")
