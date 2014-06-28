@@ -27,7 +27,6 @@ import jinja2
 import logging
 from StringIO import StringIO
 from asglib.asciidocapi import AsciiDocAPI
-from pprint import pprint
 import markdown
 from collections import defaultdict
 FORMAT = '%(levelname)-8s %(asctime)-15s: %(message)s'
@@ -43,7 +42,7 @@ def modified(src, dst):
 
 def update_file(src, dst):
     if modified(src, dst):
-        log.debug("+f %s -> %s" % (src, dst))
+        log.info("+f %s -> %s" % (src, dst))
         shutil.copy2(src, os.path.dirname(dst))
     else:
         log.debug("*f %s -> %s" % (src, dst))
@@ -51,7 +50,7 @@ def update_file(src, dst):
 
 def makedir(tgt):
     if not os.path.isdir(tgt):
-        log.debug("+d %s" % (tgt))
+        log.info("+d %s" % (tgt))
         os.mkdir(tgt)
     else:
         log.debug("*d %s" % (tgt))
@@ -107,7 +106,11 @@ class Asg(object):
         self.loader = jinja2.FileSystemLoader(self.layouts)
         self.env = jinja2.Environment(loader=self.loader)
         self._asciidoc.options('--no-header-footer')
-        self._asciidoc.attributes['author'] = self.author
+        self._asciidoc.options('--verbose')
+        if isinstance(self.author, unicode):
+            self._asciidoc.attributes['author'] = self.author.encode('utf-8')
+        else:
+            self._asciidoc.attributes['author'] = self.author
 
     def build(self):
         makedir(self.output)
@@ -195,9 +198,9 @@ class Asg(object):
                 else:
                     content.append(line)
         if fmdone:
-            return yaml.load('\n'.join(fm)), '\n'.join(content)
+            return yaml.load('\n'.join(fm)), '\n'.join(content) + '\n'
         else:
-            return {}, '\n'.join(fm)
+            return {}, '\n'.join(fm) + '\n'
 
     def read_asciidoc_fm(self, path):
         """
@@ -233,9 +236,9 @@ class Asg(object):
                 if not m:
                     raise ValueError("Unexpected %s" % (line))
                 ret[m.group(1).lower()] = m.group(2).strip()
-            return ret, '\n'.join(content)
+            return ret, '\n'.join(content) + '\n'
         else:
-            return {}, '\n'.join(content)
+            return {}, '\n'.join(content) + '\n'
 
     def _site(self):
         return {
@@ -269,8 +272,6 @@ class Asg(object):
             for tag in item.get('tags', []):
                 self._data['tags'][tag].append(item)
 
-        pprint(self._data)
-
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
         log.debug("make_slug: %s, %s, %s" % (srcpath, frontmatter, dstpath))
@@ -297,8 +298,8 @@ class Asg(object):
         cats = self._make_categories(dstpath, fm)
         # calculate destination
         # if destination is up to date, skip
-        if not modified(srcpath, dest):
-            log.debug("*f: %s -> %s" % (srcpath, dest))
+        if not modified(srcpath, self._outdir(dest)):
+            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
             return
         if 'date' in fm:
             fm['date'] = fm['date']
@@ -320,8 +321,8 @@ class Asg(object):
         fm, content = self.read_asciidoc_fm(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
         cats = self._make_categories(dstpath, fm)
-        if not modified(srcpath, dest):
-            log.debug("*f: %s -> %s" % (srcpath, dest))
+        if not modified(srcpath, self._outdir(dest)):
+            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
             return
         fm['slug'] = slug
         fm['dest'] = dest
@@ -336,8 +337,8 @@ class Asg(object):
     def parse_template(self, srcpath, dstpath):
         fm, content = self.read_fm(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
-        if not modified(srcpath, dest):
-            log.debug("*f: %s -> %s" % (srcpath, dest))
+        if not modified(srcpath, self._outdir(dest)):
+            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
             return
         fm['slug'] = slug
         fm['dest'] = dest
@@ -349,7 +350,6 @@ class Asg(object):
         self.meta_items.append(fm)
 
     def process_item(self, item):
-        log.debug(":: %s" % (item))
         item['processor'](item)
 
     def process_markdown(self, item):
@@ -364,7 +364,8 @@ class Asg(object):
         result = template.render(postdata)
         item['content'] = unmarkdowned
         self._dir(os.path.dirname(item['dest']))
-        log.debug("result: %s" % (result))
+        log.info("+f: %s -> %s" % (item['srcpath'],
+                                   self._outdir(item['dest'])))
         with open(self._outdir(item['dest']), 'w') as dest:
             dest.write(result.encode('utf-8'))
 
@@ -375,8 +376,7 @@ class Asg(object):
         postdata['page']['content'] = ''
         template2 = jinja2.Template(item['content'])
         untemplated = template2.render(postdata)
-        print repr(untemplated)
-        infile = StringIO(untemplated)
+        infile = StringIO(untemplated.encode('utf-8'))
         outfile = StringIO()
         self._asciidoc.execute(infile, outfile, backend='html5')
         unasciidoced = outfile.getvalue()
@@ -384,7 +384,8 @@ class Asg(object):
         result = template.render(postdata)
         item['content'] = unasciidoced
         self._dir(os.path.dirname(item['dest']))
-        log.debug("result: %s" % (result))
+        log.info("+f: %s -> %s" % (item['srcpath'],
+                                   self._outdir(item['dest'])))
         with open(self._outdir(item['dest']), 'w') as dest:
             dest.write(result.encode('utf-8'))
 
@@ -400,7 +401,8 @@ class Asg(object):
         # write back the processed content here
         item['content'] = untemplated
         self._dir(os.path.dirname(item['dest']))
-        log.debug("result: %s" % (result))
+        log.info("+f: %s -> %s" % (item['srcpath'],
+                                   self._outdir(item['dest'])))
         with open(self._outdir(item['dest']), 'w') as dest:
             dest.write(result.encode('utf-8'))
 
@@ -415,6 +417,8 @@ def main(args):
         args['<config>'] = './config.yaml'
     if args['--verbose']:
         log.setLevel(logging.DEBUG)
+    else:
+        log.setLevel(logging.INFO)
     log.debug("%s" % ', '.join('%s=%s' % (k, v) for k, v in args.iteritems()))
     config = yaml.load(open(args['<config>']))
     asg = Asg(args, config)
