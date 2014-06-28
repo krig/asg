@@ -1,0 +1,13 @@
+This is a test Asciidoc document
+================================
+
+This is a paragraph.
+
+This is another paragraph.
+
+..............
+This is a literal block.
+..............
+
+Yes, **indeed**, this is `asciidoc`.
+

@@ -18,7 +18,6 @@ Options:
 from docopt import docopt
 import os
 import re
-import sys
 import shutil
 from dateutil import parser as dateparser
 import datetime
@@ -26,8 +25,9 @@ import time
 import yaml
 import jinja2
 import logging
-from glob import glob
-from asglib import asciidocapi
+from StringIO import StringIO
+from asglib.asciidocapi import AsciiDocAPI
+from pprint import pprint
 import markdown
 from collections import defaultdict
 FORMAT = '%(levelname)-8s %(asctime)-15s: %(message)s'
@@ -62,9 +62,16 @@ def parse_date(d):
     return (dt - datetime.datetime(1970, 1, 1)).total_seconds()
 
 
+def is_newer(item_a, item_b):
+    if item_b is None:
+        return True
+    return parse_date(item_a['date']) > parse_date(item_b['date'])
+
+
 class Asg(object):
     def __init__(self, args, config):
         self._md = markdown.Markdown(extensions=['sane_lists', 'smarty'], output_format='html5')
+        self._asciidoc = AsciiDocAPI()
 
         self.parsers = {
             'markdown': self.parse_markdown,
@@ -89,9 +96,18 @@ class Asg(object):
                     self.filetypes[ft] = tgt
             setattr(self, key, value)
         self.output = args['--output']
+        self.url = getattr(self, 'url', 'localhost:%s' % (self.args['--port']))
+        if self.url[-1] != '/':
+            self.url += '/'
 
         self.source_items = []
         self.meta_items = []
+        if not hasattr(self, 'layouts'):
+            self.layouts = ['layouts/']
+        self.loader = jinja2.FileSystemLoader(self.layouts)
+        self.env = jinja2.Environment(loader=self.loader)
+        self._asciidoc.options('--no-header-footer')
+        self._asciidoc.attributes['author'] = self.author
 
     def build(self):
         makedir(self.output)
@@ -129,10 +145,10 @@ class Asg(object):
             self.parse_file(content, content)
 
     def _dir(self, path):
-        makedir(os.path.join(self.output, path))
+        makedir(self._outdir(path))
 
     def _update(self, src, dst):
-        update_file(src, os.path.join(self.output, dst))
+        update_file(src, self._outdir(dst))
 
     def copy_static(self, static):
         if os.path.isdir(static):
@@ -201,17 +217,16 @@ class Asg(object):
             for line in f.readlines():
                 while line and line[-1] in ('\n', '\r'):
                     line = line[:-1]
+                content.append(line)
                 if not fmdone:
                     if line.strip() == "":
                         fmdone = True
                     else:
                         fm.append(line.strip())
-                else:
-                    content.append(line)
         if fmdone:
             ret = {}
             ret['title'] = fm[0].strip()
-            if set(fm[1].strip()) != '=':
+            if set(fm[1].strip()) != set('='):
                 raise ValueError("Document has no title: %s" % (path))
             for line in fm[2:]:
                 m = re.match(r"^:(.+):(.+)$", line)
@@ -220,7 +235,7 @@ class Asg(object):
                 ret[m.group(1).lower()] = m.group(2).strip()
             return ret, '\n'.join(content)
         else:
-            return {}, '\n'.join(fm)
+            return {}, '\n'.join(content)
 
     def _site(self):
         return {
@@ -247,22 +262,24 @@ class Asg(object):
         self._data['tags'] = defaultdict(list)
         for item in self.source_items:
             self._data['pages'].append(item)
-            if self._data['newest'] is None or item['date'] > self._data['newest']['date']:
+            if is_newer(item, self._data['newest']):
                 self._data['newest'] = item
             for category in item.get('categories', []):
                 self._data['categories'][category].append(item)
             for tag in item.get('tags', []):
                 self._data['tags'][tag].append(item)
-        log.debug("data: %s" % (self._data))
+
+        pprint(self._data)
 
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
-        log.debug("make_slug: %s, %s" % (frontmatter, dstpath))
+        log.debug("make_slug: %s, %s, %s" % (srcpath, frontmatter, dstpath))
         slug, dest = frontmatter.get('slug'), frontmatter.get('url')
         if not slug:
             slug = os.path.splitext(os.path.basename(srcpath))[0].replace(' ', '_')
         if not dest:
             dest = os.path.splitext(os.path.basename(dstpath))[0] + '/index.html'
+        log.debug("slug, dest: %s, %s" % (slug, dest))
         return slug, dest
 
     def _make_categories(self, dstpath, frontmatter):
@@ -284,15 +301,18 @@ class Asg(object):
             log.debug("*f: %s -> %s" % (srcpath, dest))
             return
         if 'date' in fm:
-            fm['date'] = parse_date(fm['date'])
+            fm['date'] = fm['date']
         else:
-            fm['date'] = os.getmtime(srcpath)
+            mtime = os.path.getmtime(srcpath)
+            ltime = time.localtime(mtime)
+            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
         fm['slug'] = slug
         fm['dest'] = dest
         fm['categories'] = cats
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
+        fm['url'] = self.url + fm.get('url', fm['slug'])
         fm['processor'] = self.process_markdown
         self.source_items.append(fm)
 
@@ -309,6 +329,7 @@ class Asg(object):
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
+        fm['url'] = self.url + fm.get('url', fm['slug'])
         fm['processor'] = self.process_asciidoc
         self.meta_items.append(fm)
 
@@ -323,6 +344,7 @@ class Asg(object):
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
+        fm['url'] = self.url + fm.get('url', fm['slug'])
         fm['processor'] = self.process_template
         self.meta_items.append(fm)
 
@@ -331,13 +353,61 @@ class Asg(object):
         item['processor'](item)
 
     def process_markdown(self, item):
-        pass
+        template = self.env.get_template(item.get('layout', '_default.html'))
+        postdata = self._data.copy()
+        postdata['page'] = item.copy()
+        postdata['page']['content'] = ''
+        template2 = jinja2.Template(item['content'])
+        untemplated = template2.render(postdata)
+        unmarkdowned = self._md.convert(untemplated)
+        postdata['page']['content'] = unmarkdowned
+        result = template.render(postdata)
+        item['content'] = unmarkdowned
+        self._dir(os.path.dirname(item['dest']))
+        log.debug("result: %s" % (result))
+        with open(self._outdir(item['dest']), 'w') as dest:
+            dest.write(result.encode('utf-8'))
 
     def process_asciidoc(self, item):
-        pass
+        template = self.env.get_template(item.get('layout', '_default.html'))
+        postdata = self._data.copy()
+        postdata['page'] = item.copy()
+        postdata['page']['content'] = ''
+        template2 = jinja2.Template(item['content'])
+        untemplated = template2.render(postdata)
+        print repr(untemplated)
+        infile = StringIO(untemplated)
+        outfile = StringIO()
+        self._asciidoc.execute(infile, outfile, backend='html5')
+        unasciidoced = outfile.getvalue()
+        postdata['page']['content'] = unasciidoced
+        result = template.render(postdata)
+        item['content'] = unasciidoced
+        self._dir(os.path.dirname(item['dest']))
+        log.debug("result: %s" % (result))
+        with open(self._outdir(item['dest']), 'w') as dest:
+            dest.write(result.encode('utf-8'))
 
     def process_template(self, item):
-        pass
+        template = self.env.get_template(item.get('layout', '_default.html'))
+        postdata = self._data.copy()
+        postdata['page'] = item.copy()
+        postdata['page']['content'] = ''
+        template2 = jinja2.Template(item['content'])
+        untemplated = template2.render(postdata)
+        postdata['page']['content'] = untemplated
+        result = template.render(postdata)
+        # write back the processed content here
+        item['content'] = untemplated
+        self._dir(os.path.dirname(item['dest']))
+        log.debug("result: %s" % (result))
+        with open(self._outdir(item['dest']), 'w') as dest:
+            dest.write(result.encode('utf-8'))
+
+    def _outdir(self, path):
+        if path and path[0] == '/':
+            return os.path.join(self.output, path[1:])
+        return os.path.join(self.output, path)
 
 
 def main(args):

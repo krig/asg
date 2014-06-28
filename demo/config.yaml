@@ -14,4 +14,4 @@ static:
   - static/
 
 stylesheets:
-  - css/main.css
+  - /css/main.css
