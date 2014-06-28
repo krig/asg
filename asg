@@ -20,13 +20,16 @@ import os
 import re
 import sys
 import shutil
-import dateutil
+from dateutil import parser as dateparser
+import datetime
+import time
 import yaml
 import jinja2
 import logging
 from glob import glob
 from asglib import asciidocapi
 import markdown
+from collections import defaultdict
 FORMAT = '%(levelname)-8s %(asctime)-15s: %(message)s'
 logging.basicConfig(format=FORMAT)
 log = logging.getLogger(__name__)
@@ -53,6 +56,10 @@ def makedir(tgt):
     else:
         log.debug("*d %s" % (tgt))
 
+
+def parse_date(d):
+    dt = dateparser.parse(d)
+    return (dt - datetime.datetime(1970, 1, 1)).total_seconds()
 
 
 class Asg(object):
@@ -95,6 +102,8 @@ class Asg(object):
         for thing in self.content:
             self.parse_content(thing)
 
+        self.build_template_input()
+
         for item in self.source_items:
             self.process_item(item)
 
@@ -106,21 +115,6 @@ class Asg(object):
 
         for tag in self.tags:
             pass # process_item(TagItem(tag))
-
-    def _site(self):
-        return {
-            'title': getattr(self, 'title', 'Site'),
-            'lang': getattr(self, 'lang', 'en'),
-            'charset': getattr(self, 'charset', 'utf-8'),
-            'url': getattr(self, 'url', 'localhost:%s' % (self.args['--port'])),
-            'author': getattr(self, 'author', ''),
-            'email': getattr(self, 'email', ''),
-            'description': getattr(self, 'description', ''),
-            'uuid': getattr(self, 'uuid', getattr(self, 'title', 'Site')),
-            'favicon': getattr(self, 'favicon', '/favicon.ico'),
-            'feedurl': getattr(self, 'feedurl', '/atom.xml'),
-            'feedtype': getattr(self, 'feedtype', 'application/atom+xml')
-        }
 
     def parse_content(self, content):
         if os.path.isdir(content):
@@ -228,6 +222,39 @@ class Asg(object):
         else:
             return {}, '\n'.join(fm)
 
+    def _site(self):
+        return {
+            'title': getattr(self, 'title', 'Site'),
+            'lang': getattr(self, 'lang', 'en'),
+            'charset': getattr(self, 'charset', 'utf-8'),
+            'url': getattr(self, 'url', 'localhost:%s' % (self.args['--port'])),
+            'author': getattr(self, 'author', ''),
+            'email': getattr(self, 'email', ''),
+            'description': getattr(self, 'description', ''),
+            'uuid': getattr(self, 'uuid', getattr(self, 'title', 'Site')),
+            'favicon': getattr(self, 'favicon', '/favicon.ico'),
+            'feedurl': getattr(self, 'feedurl', '/atom.xml'),
+            'feedtype': getattr(self, 'feedtype', 'application/atom+xml')
+        }
+
+    def build_template_input(self):
+        self._data = {}
+        self._data['site'] = self._site()
+        self._data['stylesheets'] = self.stylesheets
+        self._data['pages'] = []
+        self._data['newest'] = None
+        self._data['categories'] = defaultdict(list)
+        self._data['tags'] = defaultdict(list)
+        for item in self.source_items:
+            self._data['pages'].append(item)
+            if self._data['newest'] is None or item['date'] > self._data['newest']['date']:
+                self._data['newest'] = item
+            for category in item.get('categories', []):
+                self._data['categories'][category].append(item)
+            for tag in item.get('tags', []):
+                self._data['tags'][tag].append(item)
+        log.debug("data: %s" % (self._data))
+
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
         log.debug("make_slug: %s, %s" % (frontmatter, dstpath))
@@ -238,16 +265,31 @@ class Asg(object):
             dest = os.path.splitext(os.path.basename(dstpath))[0] + '/index.html'
         return slug, dest
 
+    def _make_categories(self, dstpath, frontmatter):
+        "calculate categories for content"
+        c = []
+        if 'categories' in frontmatter:
+            c.append(frontmatter['categories'])
+        c.append(x for x in os.path.dirname(dstpath).split('/') if x)
+        c = list(set(*c))
+        return c
+
     def parse_markdown(self, srcpath, dstpath):
         fm, content = self.read_fm(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
+        cats = self._make_categories(dstpath, fm)
         # calculate destination
         # if destination is up to date, skip
         if not modified(srcpath, dest):
             log.debug("*f: %s -> %s" % (srcpath, dest))
             return
+        if 'date' in fm:
+            fm['date'] = parse_date(fm['date'])
+        else:
+            fm['date'] = os.getmtime(srcpath)
         fm['slug'] = slug
         fm['dest'] = dest
+        fm['categories'] = cats
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
@@ -257,11 +299,13 @@ class Asg(object):
     def parse_asciidoc(self, srcpath, dstpath):
         fm, content = self.read_asciidoc_fm(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
+        cats = self._make_categories(dstpath, fm)
         if not modified(srcpath, dest):
             log.debug("*f: %s -> %s" % (srcpath, dest))
             return
         fm['slug'] = slug
         fm['dest'] = dest
+        fm['categories'] = cats
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
@@ -283,15 +327,16 @@ class Asg(object):
         self.meta_items.append(fm)
 
     def process_item(self, item):
-        log.debug("process item: %s" % (str(item)))
+        log.debug(":: %s" % (item))
+        item['processor'](item)
 
-    def process_markdown(self):
+    def process_markdown(self, item):
         pass
 
-    def process_asciidoc(self):
+    def process_asciidoc(self, item):
         pass
 
-    def process_template(self):
+    def process_template(self, item):
         pass
 
 
