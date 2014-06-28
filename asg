@@ -290,12 +290,12 @@ class Asg(object):
             c.append(frontmatter['categories'])
         c.append(x for x in os.path.dirname(dstpath).split('/') if x)
         c = list(set(*c))
-        return c
+        frontmatter['categories'] = c
 
-    def parse_markdown(self, srcpath, dstpath):
-        fm, content = self.read_fm(srcpath)
+    def parse_generic(self, srcpath, dstpath, read, process, append):
+        fm, content = read(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
-        cats = self._make_categories(dstpath, fm)
+        self._make_categories(dstpath, fm)
         # calculate destination
         # if destination is up to date, skip
         if not modified(srcpath, self._outdir(dest)):
@@ -309,114 +309,59 @@ class Asg(object):
             fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
         fm['slug'] = slug
         fm['dest'] = dest
-        fm['categories'] = cats
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
         fm['url'] = self.url + fm.get('url', fm['slug'])
-        fm['processor'] = self.process_markdown
-        self.source_items.append(fm)
+        fm['processor'] = process
+        append(fm)
+
+    def parse_markdown(self, srcpath, dstpath):
+        self.parse_generic(srcpath, dstpath,
+                           self.read_fm,
+                           self.process_markdown,
+                           lambda fm: self.source_items.append(fm))
 
     def parse_asciidoc(self, srcpath, dstpath):
-        fm, content = self.read_asciidoc_fm(srcpath)
-        slug, dest = self._make_slug(srcpath, fm, dstpath)
-        cats = self._make_categories(dstpath, fm)
-        if not modified(srcpath, self._outdir(dest)):
-            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
-            return
-        if 'date' in fm:
-            fm['date'] = fm['date']
-        else:
-            mtime = os.path.getmtime(srcpath)
-            ltime = time.localtime(mtime)
-            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
-        fm['slug'] = slug
-        fm['dest'] = dest
-        fm['categories'] = cats
-        fm['content'] = content
-        fm['srcpath'] = srcpath
-        fm['dstpath'] = dstpath
-        fm['url'] = self.url + fm.get('url', fm['slug'])
-        fm['processor'] = self.process_asciidoc
-        self.meta_items.append(fm)
+        self.parse_generic(srcpath, dstpath,
+                           self.read_asciidoc_fm,
+                           self.process_asciidoc,
+                           lambda fm: self.source_items.append(fm))
 
     def parse_template(self, srcpath, dstpath):
-        fm, content = self.read_fm(srcpath)
-        slug, dest = self._make_slug(srcpath, fm, dstpath)
-        if not modified(srcpath, self._outdir(dest)):
-            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
-            return
-        if 'date' in fm:
-            fm['date'] = fm['date']
-        else:
-            mtime = os.path.getmtime(srcpath)
-            ltime = time.localtime(mtime)
-            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
-        fm['slug'] = slug
-        fm['dest'] = dest
-        fm['content'] = content
-        fm['srcpath'] = srcpath
-        fm['dstpath'] = dstpath
-        fm['url'] = self.url + fm.get('url', fm['slug'])
-        fm['processor'] = self.process_template
-        self.meta_items.append(fm)
+        self.parse_generic(srcpath, dstpath,
+                           self.read_fm,
+                           self.process_template,
+                           lambda fm: self.meta_items.append(fm))
 
     def process_item(self, item):
-        item['processor'](item)
-
-    def process_markdown(self, item):
         template = self.env.get_template(item.get('layout', '_default.html'))
         postdata = self._data.copy()
         postdata['page'] = item.copy()
         postdata['page']['content'] = ''
         template2 = jinja2.Template(item['content'])
         untemplated = template2.render(postdata)
-        unmarkdowned = self._md.convert(untemplated)
-        postdata['page']['content'] = unmarkdowned
+        processed = item['processor'](untemplated)
+        postdata['page']['content'] = processed
         result = template.render(postdata)
-        item['content'] = unmarkdowned
+        item['content'] = processed
         self._dir(os.path.dirname(item['dest']))
         log.info("+f: %s -> %s" % (item['srcpath'],
                                    self._outdir(item['dest'])))
         with open(self._outdir(item['dest']), 'w') as dest:
             dest.write(result.encode('utf-8'))
 
-    def process_asciidoc(self, item):
-        template = self.env.get_template(item.get('layout', '_default.html'))
-        postdata = self._data.copy()
-        postdata['page'] = item.copy()
-        postdata['page']['content'] = ''
-        template2 = jinja2.Template(item['content'])
-        untemplated = template2.render(postdata)
-        infile = StringIO(untemplated.encode('utf-8'))
+    def process_markdown(self, content):
+        return self._md.convert(content)
+
+    def process_asciidoc(self, content):
+        infile = StringIO(content.encode('utf-8'))
         outfile = StringIO()
         self._asciidoc.execute(infile, outfile, backend='html5')
-        unasciidoced = outfile.getvalue()
-        postdata['page']['content'] = unasciidoced
-        result = template.render(postdata)
-        item['content'] = unasciidoced
-        self._dir(os.path.dirname(item['dest']))
-        log.info("+f: %s -> %s" % (item['srcpath'],
-                                   self._outdir(item['dest'])))
-        with open(self._outdir(item['dest']), 'w') as dest:
-            dest.write(result.encode('utf-8'))
+        return outfile.getvalue()
 
-    def process_template(self, item):
-        template = self.env.get_template(item.get('layout', '_default.html'))
-        postdata = self._data.copy()
-        postdata['page'] = item.copy()
-        postdata['page']['content'] = ''
-        template2 = jinja2.Template(item['content'])
-        untemplated = template2.render(postdata)
-        postdata['page']['content'] = untemplated
-        result = template.render(postdata)
-        # write back the processed content here
-        item['content'] = untemplated
-        self._dir(os.path.dirname(item['dest']))
-        log.info("+f: %s -> %s" % (item['srcpath'],
-                                   self._outdir(item['dest'])))
-        with open(self._outdir(item['dest']), 'w') as dest:
-            dest.write(result.encode('utf-8'))
+    def process_template(self, content):
+        return content
 
     def _outdir(self, path):
         if path and path[0] == '/':
