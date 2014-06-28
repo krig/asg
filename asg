@@ -95,7 +95,7 @@ class Asg(object):
                     self.filetypes[ft] = tgt
             setattr(self, key, value)
         self.output = args['--output']
-        self.url = getattr(self, 'url', 'localhost:%s' % (self.args['--port']))
+        self.url = getattr(self, 'url', 'http://localhost:%s' % (self.args['--port']))
         if self.url[-1] != '/':
             self.url += '/'
 
@@ -245,7 +245,7 @@ class Asg(object):
             'title': getattr(self, 'title', 'Site'),
             'lang': getattr(self, 'lang', 'en'),
             'charset': getattr(self, 'charset', 'utf-8'),
-            'url': getattr(self, 'url', 'localhost:%s' % (self.args['--port'])),
+            'url': getattr(self, 'url', 'http://localhost:%s' % (self.args['--port'])),
             'author': getattr(self, 'author', ''),
             'email': getattr(self, 'email', ''),
             'description': getattr(self, 'description', ''),
@@ -324,6 +324,12 @@ class Asg(object):
         if not modified(srcpath, self._outdir(dest)):
             log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
             return
+        if 'date' in fm:
+            fm['date'] = fm['date']
+        else:
+            mtime = os.path.getmtime(srcpath)
+            ltime = time.localtime(mtime)
+            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
         fm['slug'] = slug
         fm['dest'] = dest
         fm['categories'] = cats
@@ -340,6 +346,12 @@ class Asg(object):
         if not modified(srcpath, self._outdir(dest)):
             log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
             return
+        if 'date' in fm:
+            fm['date'] = fm['date']
+        else:
+            mtime = os.path.getmtime(srcpath)
+            ltime = time.localtime(mtime)
+            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
         fm['slug'] = slug
         fm['dest'] = dest
         fm['content'] = content
