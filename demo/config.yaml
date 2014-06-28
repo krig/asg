@@ -1,0 +1,17 @@
+title: crmsh
+description: cluster management shell
+author: "Kristoffer Grönlund, Dejan Muhamedagic"
+lang: en
+charset: utf-8
+
+layouts: 
+  - layouts/
+
+content:
+  - content/
+
+static:
+  - static/
+
+stylesheets:
+  - css/main.css

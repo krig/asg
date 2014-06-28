@@ -18,25 +18,144 @@ Options:
 from docopt import docopt
 import os
 import sys
+import shutil
 import yaml
 import jinja2
 import logging
+from glob import glob
+from asglib import asciidocapi
+import markdown
 FORMAT = '%(levelname)-8s %(asctime)-15s: %(message)s'
 logging.basicConfig(format=FORMAT)
 log = logging.getLogger(__name__)
 
 
+def modified(src, dst):
+    if os.path.exists(dst):
+        return os.path.getmtime(src) > os.path.getmtime(dst)
+    return True
+
+
+def update_file(src, dst):
+    if modified(src, dst):
+        log.debug("+f %s -> %s" % (src, dst))
+        shutil.copy2(src, os.path.dirname(dst))
+    else:
+        log.debug("*f %s -> %s" % (src, dst))
+
+
+def makedir(tgt):
+    if not os.path.isdir(tgt):
+        log.debug("+d %s" % (tgt))
+        os.mkdir(tgt)
+    else:
+        log.debug("*d %s" % (tgt))
+
+
 class Asg(object):
     def __init__(self, args, config):
-        self.title = config['title']
-        self.layouts = config['layouts']
-        self.content = config['content']
+        ftmapper = {
+            'markdown': self.process_markdown,
+            'asciidoc': self.process_asciidoc,
+            'template': self.process_template
+        }
+        self.filetypes = {
+            '.md': ftmapper['markdown'],
+            '.txt': ftmapper['asciidoc'],
+            '.html': ftmapper['template'],
+            '.xml': ftmapper['template']
+        }
+
+        self.args = args
+        for key, value in config.iteritems():
+            if key == 'filetypes':
+                for ft, tgt in value.iteritems():
+                    self.filetypes[ft] = ftmapper[tgt]
+            setattr(self, key, value)
         self.output = args['--output']
 
     def build(self):
-        if not os.path.isdir(self.output):
-            os.mkdir(self.output)
+        makedir(self.output)
+
+        data = {'site': self._site(),
+                'newest': None,
+                'pages': None,
+                'stylesheets': None,
+                'categories': None,
+                'tags': None
+        }
+
+        for thing in self.static:
+            self.copy_static(data, thing)
+
+        for thing in self.content:
+            self.process_content(data, thing)
+
+    def _site(self):
+        return {
+            'title': getattr(self, 'title', 'Site'),
+            'lang': getattr(self, 'lang', 'en'),
+            'charset': getattr(self, 'charset', 'utf-8'),
+            'url': getattr(self, 'url', 'localhost:%s' % (self.args['--port'])),
+            'author': getattr(self, 'author', ''),
+            'email': getattr(self, 'email', ''),
+            'description': getattr(self, 'description', ''),
+            'uuid': getattr(self, 'uuid', getattr(self, 'title', 'Site')),
+            'favicon': getattr(self, 'favicon', '/favicon.ico'),
+            'feedurl': getattr(self, 'feedurl', '/atom.xml'),
+            'feedtype': getattr(self, 'feedtype', 'application/atom+xml')
+        }
+
+    def process_content(self, data, content):
+        if os.path.isdir(content):
+            pfxlen = len(content)
+            for root, subdirs, files in os.walk(content, followlinks=True):
+                tgtdir = root[pfxlen:]
+                log.debug("? %s, %s, %s, %s" % (root, tgtdir, subdirs, files))
+                for f in files:
+                    self.process_content_file(data,
+                                              os.path.join(root, f),
+                                              os.path.join(tgtdir, f))
+        else:
+            self.process_content_file(data, content, content)
+
+    def _dir(self, path):
+        makedir(os.path.join(self.output, path))
+
+    def _update(self, src, dst):
+        update_file(src, os.path.join(self.output, dst))
+
+    def copy_static(self, data, static):
+        if os.path.isdir(static):
+            pfxlen = len(static)
+            for root, subdirs, files in os.walk(static, followlinks=True):
+                tgtdir = root[pfxlen:]
+                if tgtdir:
+                    self._dir(tgtdir)
+                for f in files:
+                    self._update(os.path.join(root, f),
+                                 os.path.join(tgtdir, f))
+        else:
+            path, name = os.path.split(static)
+            if path:
+                self._dir(path)
+            self._update(static, static)
+
+    def process_content_file(self, data, srcpath, dstpath):
+        log.debug("?f %s -> %s" % (srcpath, dstpath))
+        _, ext = os.path.splitext(srcpath)
+        if ext not in self.filetypes:
+            raise ValueError("Unknown content type: %s" % (ext))
+
+    def process_markdown(self):
         pass
+
+    def process_asciidoc(self):
+        pass
+
+    def process_template(self):
+        pass
+
 
 
 def main(args):

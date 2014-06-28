@@ -1,0 +1,11 @@
+title: home
+date: 2014-06-28 14:14
+---
+
+<h1>{{site.title}}</h1>
+
+<ul class="page-list">
+  {% for item in pages %}
+    <li class="page-link"><time>{{item.date}}</time> <a href="{{item.url}}">{{item.title}}</a></li>
+  {% endfor %}
+</ul>
