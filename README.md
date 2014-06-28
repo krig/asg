@@ -40,7 +40,10 @@ There are couple of magic layouts:
   can specify a different layout to be used using the front matter.
 
 
-* First, all the content is read into a big list
+Processing has to be done in two steps: First read all the documents
+and their metadata and organize them into a big hierarchy, then
+process the templates for all source documents (ends with .md or
+.txt), then process all meta documents (ends with .html or .xml).
 
 ## front matter
 
@@ -86,3 +89,4 @@ These variables are available to templates
   * page.uuid
   * page.url
   * page.content
+

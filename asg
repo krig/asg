@@ -17,8 +17,10 @@ Options:
 """
 from docopt import docopt
 import os
+import re
 import sys
 import shutil
+import dateutil
 import yaml
 import jinja2
 import logging
@@ -52,44 +54,58 @@ def makedir(tgt):
         log.debug("*d %s" % (tgt))
 
 
+
 class Asg(object):
     def __init__(self, args, config):
-        ftmapper = {
-            'markdown': self.process_markdown,
-            'asciidoc': self.process_asciidoc,
-            'template': self.process_template
+        self._md = markdown.Markdown(extensions=['sane_lists', 'smarty'], output_format='html5')
+
+        self.parsers = {
+            'markdown': self.parse_markdown,
+            'asciidoc': self.parse_asciidoc,
+            'template': self.parse_template
         }
         self.filetypes = {
-            '.md': ftmapper['markdown'],
-            '.txt': ftmapper['asciidoc'],
-            '.html': ftmapper['template'],
-            '.xml': ftmapper['template']
+            '.md': 'markdown',
+            '.txt': 'asciidoc',
+            '.html': 'template',
+            '.xml': 'template'
         }
+        self.categories = []
+        self.tags = []
 
         self.args = args
         for key, value in config.iteritems():
             if key == 'filetypes':
                 for ft, tgt in value.iteritems():
-                    self.filetypes[ft] = ftmapper[tgt]
+                    if tgt not in self.parsers:
+                        raise ValueError("Unknown parsers for %s: %s" % (ft, tgt))
+                    self.filetypes[ft] = tgt
             setattr(self, key, value)
         self.output = args['--output']
+
+        self.source_items = []
+        self.meta_items = []
 
     def build(self):
         makedir(self.output)
 
-        data = {'site': self._site(),
-                'newest': None,
-                'pages': None,
-                'stylesheets': None,
-                'categories': None,
-                'tags': None
-        }
-
         for thing in self.static:
-            self.copy_static(data, thing)
+            self.copy_static(thing)
 
         for thing in self.content:
-            self.process_content(data, thing)
+            self.parse_content(thing)
+
+        for item in self.source_items:
+            self.process_item(item)
+
+        for item in self.meta_items:
+            self.process_item(item)
+
+        for category in self.categories:
+            pass # process_item(CategoryItem(category))
+
+        for tag in self.tags:
+            pass # process_item(TagItem(tag))
 
     def _site(self):
         return {
@@ -106,18 +122,17 @@ class Asg(object):
             'feedtype': getattr(self, 'feedtype', 'application/atom+xml')
         }
 
-    def process_content(self, data, content):
+    def parse_content(self, content):
         if os.path.isdir(content):
             pfxlen = len(content)
             for root, subdirs, files in os.walk(content, followlinks=True):
                 tgtdir = root[pfxlen:]
                 log.debug("? %s, %s, %s, %s" % (root, tgtdir, subdirs, files))
                 for f in files:
-                    self.process_content_file(data,
-                                              os.path.join(root, f),
-                                              os.path.join(tgtdir, f))
+                    self.parse_file(os.path.join(root, f),
+                                    os.path.join(tgtdir, f))
         else:
-            self.process_content_file(data, content, content)
+            self.parse_file(content, content)
 
     def _dir(self, path):
         makedir(os.path.join(self.output, path))
@@ -125,7 +140,7 @@ class Asg(object):
     def _update(self, src, dst):
         update_file(src, os.path.join(self.output, dst))
 
-    def copy_static(self, data, static):
+    def copy_static(self, static):
         if os.path.isdir(static):
             pfxlen = len(static)
             for root, subdirs, files in os.walk(static, followlinks=True):
@@ -141,11 +156,134 @@ class Asg(object):
                 self._dir(path)
             self._update(static, static)
 
-    def process_content_file(self, data, srcpath, dstpath):
+    def parse_file(self, srcpath, dstpath):
         log.debug("?f %s -> %s" % (srcpath, dstpath))
         _, ext = os.path.splitext(srcpath)
         if ext not in self.filetypes:
-            raise ValueError("Unknown content type: %s" % (ext))
+            raise ValueError("No parser for: %s" % (ext))
+        log.debug("!p %s :: %s" % (srcpath, self.filetypes[ext]))
+        self.parsers[self.filetypes[ext]](srcpath, dstpath)
+
+    def read_fm(self, path):
+        """
+        Reads and parses front matter from file in path.
+        If there is no front matter, returns {}, <content>
+        Else returns frontmatter, <content>
+        """
+        fm = []
+        content = []
+        fmdone = False
+        with open(path) as f:
+            for line in f.readlines():
+                while line and line[-1] in ('\n', '\r'):
+                    line = line[:-1]
+                if not fmdone:
+                    if line.strip() == "---":
+                        fmdone = True
+                    else:
+                        fm.append(line.strip())
+                else:
+                    content.append(line)
+        if fmdone:
+            return yaml.load('\n'.join(fm)), '\n'.join(content)
+        else:
+            return {}, '\n'.join(fm)
+
+    def read_asciidoc_fm(self, path):
+        """
+        Asciidoc front-matter is of a different format:
+        <title>
+        =======
+        :<key>: <value>
+
+        until a blank line
+
+        Not exactly true, but...
+        """
+        fm = []
+        content = []
+        fmdone = False
+        with open(path) as f:
+            for line in f.readlines():
+                while line and line[-1] in ('\n', '\r'):
+                    line = line[:-1]
+                if not fmdone:
+                    if line.strip() == "":
+                        fmdone = True
+                    else:
+                        fm.append(line.strip())
+                else:
+                    content.append(line)
+        if fmdone:
+            ret = {}
+            ret['title'] = fm[0].strip()
+            if set(fm[1].strip()) != '=':
+                raise ValueError("Document has no title: %s" % (path))
+            for line in fm[2:]:
+                m = re.match(r"^:(.+):(.+)$", line)
+                if not m:
+                    raise ValueError("Unexpected %s" % (line))
+                ret[m.group(1).lower()] = m.group(2).strip()
+            return ret, '\n'.join(content)
+        else:
+            return {}, '\n'.join(fm)
+
+    def _make_slug(self, srcpath, frontmatter, dstpath):
+        "returns slug, dest"
+        log.debug("make_slug: %s, %s" % (frontmatter, dstpath))
+        slug, dest = frontmatter.get('slug'), frontmatter.get('url')
+        if not slug:
+            slug = os.path.splitext(os.path.basename(srcpath))[0].replace(' ', '_')
+        if not dest:
+            dest = os.path.splitext(os.path.basename(dstpath))[0] + '/index.html'
+        return slug, dest
+
+    def parse_markdown(self, srcpath, dstpath):
+        fm, content = self.read_fm(srcpath)
+        slug, dest = self._make_slug(srcpath, fm, dstpath)
+        # calculate destination
+        # if destination is up to date, skip
+        if not modified(srcpath, dest):
+            log.debug("*f: %s -> %s" % (srcpath, dest))
+            return
+        fm['slug'] = slug
+        fm['dest'] = dest
+        fm['content'] = content
+        fm['srcpath'] = srcpath
+        fm['dstpath'] = dstpath
+        fm['processor'] = self.process_markdown
+        self.source_items.append(fm)
+
+    def parse_asciidoc(self, srcpath, dstpath):
+        fm, content = self.read_asciidoc_fm(srcpath)
+        slug, dest = self._make_slug(srcpath, fm, dstpath)
+        if not modified(srcpath, dest):
+            log.debug("*f: %s -> %s" % (srcpath, dest))
+            return
+        fm['slug'] = slug
+        fm['dest'] = dest
+        fm['content'] = content
+        fm['srcpath'] = srcpath
+        fm['dstpath'] = dstpath
+        fm['processor'] = self.process_asciidoc
+        self.meta_items.append(fm)
+
+    def parse_template(self, srcpath, dstpath):
+        fm, content = self.read_fm(srcpath)
+        slug, dest = self._make_slug(srcpath, fm, dstpath)
+        if not modified(srcpath, dest):
+            log.debug("*f: %s -> %s" % (srcpath, dest))
+            return
+        fm['slug'] = slug
+        fm['dest'] = dest
+        fm['content'] = content
+        fm['srcpath'] = srcpath
+        fm['dstpath'] = dstpath
+        fm['processor'] = self.process_template
+        self.meta_items.append(fm)
+
+    def process_item(self, item):
+        log.debug("process item: %s" % (str(item)))
 
     def process_markdown(self):
         pass
@@ -155,7 +293,6 @@ class Asg(object):
 
     def process_template(self):
         pass
-
 
 
 def main(args):
