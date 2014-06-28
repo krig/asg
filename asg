@@ -1,0 +1,30 @@
+#!/usr/bin/env python
+"""asg
+
+Usage:
+  asg [-o <dir>] [--serve|--watch] [--port=<port>] [<config>]
+
+Options:
+  -h --help      Show this screen.
+  --version      Show version.
+  -o <dir>       Output directory (default: output/)
+  --serve        Launch server.
+  --watch        Launch server, watch content for changes.
+  --port=<port>  Server port (default: 4763)
+"""
+from docopt import docopt
+
+import os
+import sys
+import yaml
+import jinja2
+
+
+
+def main(args):
+    config = yaml.load(args.config)
+    print config
+
+if __name__ == "__main__":
+    args = docopt(__doc__, version="asg 0.1")
+    main(args)
