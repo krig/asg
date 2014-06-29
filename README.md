@@ -34,6 +34,15 @@ See demo.
 
 * --watch for changes
 
+## virtualenv
+
+You may need to install some dependencies like `libyaml-devel`
+before activating the virtualenv.
+
+    virtualenv --no-site-packages asg-env
+    source asg-env/bin/activate
+    pip install -r requirements.txt
+
 ## TODO
 
 * metadata override in config file

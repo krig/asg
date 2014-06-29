@@ -19,7 +19,7 @@ from docopt import docopt
 import os
 import re
 import shutil
-import hashlib
+import urlparse
 from dateutil import parser as dateparser
 import datetime
 import time
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 def modified(src, dst):
     if src and dst and os.path.exists(src) and os.path.exists(dst):
-        return os.path.getmtime(src) > os.path.getmtime(dst)
+        return int(os.path.getmtime(src)) > int(os.path.getmtime(dst))
     return True
 
 
@@ -66,6 +66,10 @@ def parse_date(d):
 
 def format_date(ts):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
+def ts_to_date(ts):
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
 def is_newer(item_a, item_b):
@@ -98,9 +102,11 @@ class Asg(object):
                     self.filetypes[ft] = tgt
             setattr(self, key, value)
         self.output = args['--output']
-        self.url = getattr(self, 'url', 'http://localhost:%s' % (self.args['--port']))
-        if self.url[-1] != '/':
-            self.url += '/'
+        scheme, netloc, _, _, _ = urlparse.urlsplit(
+            getattr(self, 'url', 'http://localhost:%s' % (self.args['--port'])))
+        if scheme == '':
+            scheme = 'http'
+        self.url = urlparse.urlunsplit((scheme, netloc, '', '', ''))
 
         self.source_items = []
         self.meta_items = []
@@ -143,18 +149,21 @@ class Asg(object):
         self._process_list_item(self.categories,
                                 newest_date,
                                 '_category.html',
+                                lambda name: '/%s/' % (name),
                                 lambda name: os.path.join(name, 'index.html'))
         self._process_list_item(self.tags,
                                 newest_date,
                                 '_tag.html',
+                                lambda name: '/tag/%s/' % (name),
                                 lambda name: os.path.join('tag', name, 'index.html'))
 
-    def _process_list_item(self, names, date, template, destfn):
+    def _process_list_item(self, names, date, template, slugfn, destfn):
         if not self._has_template(template):
             return
         for name in names:
             self.process_item({'layout': template, 'date': date, 'title': name,
-                               'content': name, 'srcpath': '', 'dest': destfn(name),
+                               'content': name, 'srcpath': '',
+                               'slug': slugfn(name), 'dest': destfn(name),
                                'processor': self.process_template})
 
     def _has_template(self, tmpl):
@@ -277,11 +286,11 @@ class Asg(object):
             'title': getattr(self, 'title', 'Site'),
             'lang': getattr(self, 'lang', 'en'),
             'charset': getattr(self, 'charset', 'utf-8'),
-            'url': getattr(self, 'url', 'http://localhost:%s' % (self.args['--port'])),
+            'url': self.url,
             'author': getattr(self, 'author', ''),
             'email': getattr(self, 'email', ''),
             'description': getattr(self, 'description', ''),
-            'uuid': getattr(self, 'uuid', getattr(self, 'title', 'Site')),
+            'uuid': self.uuidgen(self.newest_parsed_mtime, '/'),
             'favicon': getattr(self, 'favicon', '/favicon.ico'),
             'feedurl': getattr(self, 'feedurl', '/atom.xml'),
             'feedtype': getattr(self, 'feedtype', 'application/atom+xml')
@@ -340,12 +349,12 @@ class Asg(object):
         else:
             mtime = os.path.getmtime(srcpath)
             fm['date'] = format_date(mtime)
-        fm['slug'] = slug
         fm['dest'] = dest
         fm['content'] = content
         fm['srcpath'] = srcpath
         fm['dstpath'] = dstpath
-        fm['url'] = self.url + fm.get('url', fm['slug'])
+        fm['url'] = urlparse.urljoin(self.url, fm.get('url', slug))
+        fm['slug'] = urlparse.urlsplit(fm['url']).path
         fm['processor'] = process
         append(fm)
 
@@ -367,6 +376,12 @@ class Asg(object):
                            self.process_template,
                            lambda fm: self.meta_items.append(fm))
 
+    def uuidgen(self, ts, path):
+        url = urlparse.urljoin(self.url, path)
+        _, netloc, path, _, _ = urlparse.urlsplit(url)
+        url = "tag:%s,%s:%s" % (netloc, ts_to_date(ts), path)
+        return url.replace('#', '/')
+
     def process_item(self, item):
         template = self.env.get_template(item.get('layout', '_default.html'))
         postdata = self._data.copy()
@@ -377,7 +392,7 @@ class Asg(object):
         processed = item['processor'](untemplated)
         postdata['page']['content'] = processed
         result = template.render(postdata)
-        item['uuid'] = hashlib.sha1(result.encode('utf-8')).hexdigest()
+        item['uuid'] = self.uuidgen(parse_date(item['date']), item['slug'])
         item['content'] = processed
         self._dir(os.path.dirname(item['dest']))
         srcpath = item['srcpath']
