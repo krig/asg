@@ -1,13 +1,18 @@
 {% include "head.html" %}
+{% include "sidebar.html" %}
 
-<div class="content">
+<div class="page">
+<div class="post">
 
+<div class="post-list">
 <ul>
 {% for c in categories[page.title] %}
-<li><a href="{{c.url}}">{{c.title}}</a></li>
+<li><time>{{c.date}}</time> <a href="{{c.url}}">{{c.title}}</a></li>
 {% endfor %}
 </ul>
+</div>
 
+</div>
 </div>
 
 {% include "foot.html" %}

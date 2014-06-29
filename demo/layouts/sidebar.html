@@ -1,0 +1,15 @@
+<div class="sidebar">
+<div class="sidebar-sticky">
+<div class="sidebar-header">
+<h1>{{site.title}}</h1>
+<h3>{{site.description}}</h3>
+
+<ul class="sidebar-nav">
+<li><a href="{{site.url}}">Home</a></li>
+{% for c in categories %}
+<li><a href="{{site.url}}/{{c}}">{{c}}</a></li>
+{% endfor %}
+</ul>
+</div>
+</div>
+</div>
