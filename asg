@@ -390,6 +390,8 @@ class Asg(object):
         processed = item['processor'](untemplated)
         postdata['page']['content'] = processed
         result = template.render(postdata)
+        import hashlib
+        item['uuid'] = hashlib.sha1(result.encode('utf-8')).hexdigest()
         item['content'] = processed
         self._dir(os.path.dirname(item['dest']))
         srcpath = item['srcpath']

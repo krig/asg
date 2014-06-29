@@ -6,7 +6,7 @@
   <link>{{site.url}}</link>
   <id>{{site.uuid}}</id>
   <updated>{{newest.date}}</updated>
-  {% for page in pages %}
+  {% for page in pages | sort(attribute='date', reverse=True) %}
   <entry>
     <title>{{page.title}}</title>
     <link>{{page.url}}</link>
