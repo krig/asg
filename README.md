@@ -24,6 +24,14 @@ a site generator
 
 See demo.
 
+## features
+
+* jinja templates
+
+* write content in markdown, asciidoc or html
+
+* generate pretty urls
+
 ## TODO
 
 * --watch doesn't work
@@ -31,6 +39,8 @@ See demo.
 * metadata override in config file
 
 * URL building / escaping is broken
+
+* atom feed uuids are broken
 
 ## variables
 
