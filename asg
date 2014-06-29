@@ -312,6 +312,11 @@ class Asg(object):
                 self._data['tags'][c].append(item)
             if is_newer(item, self._data['newest']):
                 self._data['newest'] = item
+        self._data['pages'].sort(key=lambda p: p['date'], reverse=True)
+        for i in self._data['categories'].values():
+            i.sort(key=lambda p: p['date'], reverse=True)
+        for i in self._data['tags'].values():
+            i.sort(key=lambda p: p['date'], reverse=True)
 
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
@@ -438,42 +443,39 @@ def main(args):
     config = yaml.load(open(args['<config>']))
     asg = Asg(args, config)
     asg.build()
-    if args['--serve']:
-        import SimpleHTTPServer
-        import SocketServer
-        os.chdir(args['--output'])
-        PORT = int(args['--port'])
-        print "Serving on 0.0.0.0:%s" % (PORT)
-        handler = SimpleHTTPServer.SimpleHTTPRequestHandler
-        httpd = SocketServer.TCPServer(("", PORT), handler)
-        httpd.serve_forever()
-    elif args['--watch']:
+    import SimpleHTTPServer
+    import SocketServer
+
+    class AsgServer(SocketServer.TCPServer):
+        allow_reuse_address = True
+    PORT = int(args['--port'])
+    cwd = os.getcwd()
+    servedir = os.path.abspath(os.path.join(cwd, args['--output']))
+    if args['--watch']:
         from watchdog.observers import Observer
         from watchdog.events import FileSystemEventHandler
-        import SimpleHTTPServer
-        import SocketServer
-
-        cwd = os.getcwd()
-        servedir = os.path.abspath(os.path.join(cwd, args['--output']))
 
         class ChangeHandler(FileSystemEventHandler):
             def on_any_event(self, event):
                 if os.path.basename(event.src_path).startswith('.'):
                     return
-                os.chdir(cwd)
                 try:
+                    os.chdir(cwd)
                     asg.build()
                 finally:
                     os.chdir(servedir)
 
         observer = Observer()
-        observer.schedule(ChangeHandler(), asg.content[0], recursive=True)
+        for d in asg.content:
+            observer.schedule(ChangeHandler(), d, recursive=True)
+        for c in asg.layouts:
+            observer.schedule(ChangeHandler(), d, recursive=True)
         observer.start()
-        os.chdir(servedir)
-        PORT = int(args['--port'])
+
+    if args['--watch'] or args['--serve']:
         print "Serving on 0.0.0.0:%s" % (PORT)
-        handler = SimpleHTTPServer.SimpleHTTPRequestHandler
-        httpd = SocketServer.TCPServer(("", PORT), handler)
+        os.chdir(servedir)
+        httpd = AsgServer(("", PORT), SimpleHTTPServer.SimpleHTTPRequestHandler)
         httpd.serve_forever()
 
 if __name__ == "__main__":
