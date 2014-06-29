@@ -19,6 +19,7 @@ from docopt import docopt
 import os
 import re
 import shutil
+import hashlib
 from dateutil import parser as dateparser
 import datetime
 import time
@@ -60,19 +61,15 @@ def makedir(tgt):
 
 
 def parse_date(d):
-    dt = dateparser.parse(d)
-    return (dt - datetime.datetime(1970, 1, 1)).total_seconds()
+    return (dateparser.parse(d) - datetime.datetime(1970, 1, 1)).total_seconds()
 
 
 def format_date(ts):
-    ltime = time.localtime(ts)
-    return time.strftime("%Y-%m-%d %H:%M", ltime)
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
 def is_newer(item_a, item_b):
-    if item_b is None:
-        return True
-    return parse_date(item_a['date']) > parse_date(item_b['date'])
+    return item_b is None or parse_date(item_a['date']) > parse_date(item_b['date'])
 
 
 class Asg(object):
@@ -80,17 +77,14 @@ class Asg(object):
         self._md = markdown.Markdown(extensions=['sane_lists', 'smarty'], output_format='html5')
         self._asciidoc = AsciiDocAPI()
         self.newest_parsed_mtime = 0  # in seconds
-
         self.parsers = {
             'markdown': self.parse_markdown,
             'asciidoc': self.parse_asciidoc,
             'template': self.parse_template
         }
         self.filetypes = {
-            '.md': 'markdown',
-            '.txt': 'asciidoc',
-            '.html': 'template',
-            '.xml': 'template'
+            '.md': 'markdown', '.txt': 'asciidoc',
+            '.html': 'template', '.xml': 'template'
         }
         self.categories = []
         self.tags = []
@@ -122,11 +116,16 @@ class Asg(object):
             self._asciidoc.attributes['author'] = self.author
 
     def build(self):
+        # reset ..
+        self.categories = []
+        self.tags = []
+        self.source_items = []
+        self.meta_items = []
+        self.newest_parsed_mtime = 0
         makedir(self.output)
 
         for thing in self.static:
             self.copy_static(thing)
-
         for thing in self.content:
             self.parse_content(thing)
 
@@ -134,40 +133,29 @@ class Asg(object):
 
         for item in self.source_items:
             self.process_item(item)
-
         for item in self.meta_items:
             self.process_item(item)
-
-        log.info("categories: " + ', '.join(self.categories))
-        log.info("tags: " + ', '.join(self.tags))
 
         if self._data['newest']:
             newest_date = self._data['newest']['date']
         else:
             newest_date = format_date(self.newest_parsed_mtime)
-        if self._has_template('_category.html'):
-            for category in self.categories:
-                item = {'layout': '_category.html',
-                        'date': newest_date,
-                        'title': category,
-                        'content': category,
-                        'srcpath': '',
-                        'dest': os.path.join(category, 'index.html'),
-                        'processor': self.process_template
-                        }
-                self.process_item(item)
+        self._process_list_item(self.categories,
+                                newest_date,
+                                '_category.html',
+                                lambda name: os.path.join(name, 'index.html'))
+        self._process_list_item(self.tags,
+                                newest_date,
+                                '_tag.html',
+                                lambda name: os.path.join('tag', name, 'index.html'))
 
-        if self._has_template('_tag.html'):
-            for tag in self.tags:
-                item = {'layout': '_tag.html',
-                        'date': newest_date,
-                        'title': tag,
-                        'content': tag,
-                        'srcpath': '',
-                        'dest': os.path.join('tag', tag, 'index.html'),
-                        'processor': self.process_template
-                        }
-                self.process_item(item)
+    def _process_list_item(self, names, date, template, destfn):
+        if not self._has_template(template):
+            return
+        for name in names:
+            self.process_item({'layout': template, 'date': date, 'title': name,
+                               'content': name, 'srcpath': '', 'dest': destfn(name),
+                               'processor': self.process_template})
 
     def _has_template(self, tmpl):
         try:
@@ -318,13 +306,12 @@ class Asg(object):
 
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
-        log.debug("make_slug: %s, %s, %s" % (srcpath, frontmatter, dstpath))
         slug, dest = frontmatter.get('slug'), frontmatter.get('url')
+        noext = os.path.splitext(dstpath)[0]
         if not slug:
-            slug = os.path.splitext(dstpath)[0].replace(' ', '_')
+            slug = noext.replace(' ', '_')
         if not dest:
-            dest = os.path.splitext(dstpath)[0] + '/index.html'
-        log.debug("slug, dest: %s, %s" % (slug, dest))
+            dest = noext + '/index.html'
         return slug, dest
 
     def _make_categories_and_tags(self, dstpath, frontmatter):
@@ -390,7 +377,6 @@ class Asg(object):
         processed = item['processor'](untemplated)
         postdata['page']['content'] = processed
         result = template.render(postdata)
-        import hashlib
         item['uuid'] = hashlib.sha1(result.encode('utf-8')).hexdigest()
         item['content'] = processed
         self._dir(os.path.dirname(item['dest']))
@@ -441,6 +427,34 @@ def main(args):
         import SimpleHTTPServer
         import SocketServer
         os.chdir(args['--output'])
+        PORT = int(args['--port'])
+        print "Serving on 0.0.0.0:%s" % (PORT)
+        handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+        httpd = SocketServer.TCPServer(("", PORT), handler)
+        httpd.serve_forever()
+    elif args['--watch']:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+        import SimpleHTTPServer
+        import SocketServer
+
+        cwd = os.getcwd()
+        servedir = os.path.abspath(os.path.join(cwd, args['--output']))
+
+        class ChangeHandler(FileSystemEventHandler):
+            def on_any_event(self, event):
+                if os.path.basename(event.src_path).startswith('.'):
+                    return
+                os.chdir(cwd)
+                try:
+                    asg.build()
+                finally:
+                    os.chdir(servedir)
+
+        observer = Observer()
+        observer.schedule(ChangeHandler(), asg.content[0], recursive=True)
+        observer.start()
+        os.chdir(servedir)
         PORT = int(args['--port'])
         print "Serving on 0.0.0.0:%s" % (PORT)
         handler = SimpleHTTPServer.SimpleHTTPRequestHandler

@@ -32,9 +32,9 @@ See demo.
 
 * generate pretty urls
 
-## TODO
+* --watch for changes
 
-* --watch doesn't work
+## TODO
 
 * metadata override in config file
 
