@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 
 def modified(src, dst):
-    if os.path.exists(dst):
+    if src and dst and os.path.exists(src) and os.path.exists(dst):
         return os.path.getmtime(src) > os.path.getmtime(dst)
     return True
 
@@ -51,7 +51,10 @@ def update_file(src, dst):
 def makedir(tgt):
     if not os.path.isdir(tgt):
         log.info("+d %s" % (tgt))
-        os.mkdir(tgt)
+        try:
+            os.makedirs(tgt)
+        except OSError:
+            pass
     else:
         log.debug("*d %s" % (tgt))
 
@@ -59,6 +62,11 @@ def makedir(tgt):
 def parse_date(d):
     dt = dateparser.parse(d)
     return (dt - datetime.datetime(1970, 1, 1)).total_seconds()
+
+
+def format_date(ts):
+    ltime = time.localtime(ts)
+    return time.strftime("%Y-%m-%d %H:%M", ltime)
 
 
 def is_newer(item_a, item_b):
@@ -71,6 +79,7 @@ class Asg(object):
     def __init__(self, args, config):
         self._md = markdown.Markdown(extensions=['sane_lists', 'smarty'], output_format='html5')
         self._asciidoc = AsciiDocAPI()
+        self.newest_parsed_mtime = 0  # in seconds
 
         self.parsers = {
             'markdown': self.parse_markdown,
@@ -129,11 +138,43 @@ class Asg(object):
         for item in self.meta_items:
             self.process_item(item)
 
-        for category in self.categories:
-            pass # process_item(CategoryItem(category))
+        log.info("categories: " + ', '.join(self.categories))
+        log.info("tags: " + ', '.join(self.tags))
 
-        for tag in self.tags:
-            pass # process_item(TagItem(tag))
+        if self._data['newest']:
+            newest_date = self._data['newest']['date']
+        else:
+            newest_date = format_date(self.newest_parsed_mtime)
+        if self._has_template('_category.html'):
+            for category in self.categories:
+                item = {'layout': '_category.html',
+                        'date': newest_date,
+                        'title': category,
+                        'content': category,
+                        'srcpath': '',
+                        'dest': os.path.join(category, 'index.html'),
+                        'processor': self.process_template
+                        }
+                self.process_item(item)
+
+        if self._has_template('_tag.html'):
+            for tag in self.tags:
+                item = {'layout': '_tag.html',
+                        'date': newest_date,
+                        'title': tag,
+                        'content': tag,
+                        'srcpath': '',
+                        'dest': os.path.join('tag', tag, 'index.html'),
+                        'processor': self.process_template
+                        }
+                self.process_item(item)
+
+    def _has_template(self, tmpl):
+        try:
+            t = self.env.get_template(tmpl)
+            return t is not None
+        except jinja2.TemplateNotFound:
+            return False
 
     def parse_content(self, content):
         if os.path.isdir(content):
@@ -175,6 +216,9 @@ class Asg(object):
         if ext not in self.filetypes:
             raise ValueError("No parser for: %s" % (ext))
         log.debug("!p %s :: %s" % (srcpath, self.filetypes[ext]))
+        mtime = os.path.getmtime(srcpath)
+        if mtime > self.newest_parsed_mtime:
+            self.newest_parsed_mtime = mtime
         self.parsers[self.filetypes[ext]](srcpath, dstpath)
 
     def read_fm(self, path):
@@ -265,48 +309,50 @@ class Asg(object):
         self._data['tags'] = defaultdict(list)
         for item in self.source_items:
             self._data['pages'].append(item)
+            for c in item.get('categories', []):
+                self._data['categories'][c].append(item)
+            for c in item.get('tags', []):
+                self._data['tags'][c].append(item)
             if is_newer(item, self._data['newest']):
                 self._data['newest'] = item
-            for category in item.get('categories', []):
-                self._data['categories'][category].append(item)
-            for tag in item.get('tags', []):
-                self._data['tags'][tag].append(item)
 
     def _make_slug(self, srcpath, frontmatter, dstpath):
         "returns slug, dest"
         log.debug("make_slug: %s, %s, %s" % (srcpath, frontmatter, dstpath))
         slug, dest = frontmatter.get('slug'), frontmatter.get('url')
         if not slug:
-            slug = os.path.splitext(os.path.basename(srcpath))[0].replace(' ', '_')
+            slug = os.path.splitext(dstpath)[0].replace(' ', '_')
         if not dest:
-            dest = os.path.splitext(os.path.basename(dstpath))[0] + '/index.html'
+            dest = os.path.splitext(dstpath)[0] + '/index.html'
         log.debug("slug, dest: %s, %s" % (slug, dest))
         return slug, dest
 
-    def _make_categories(self, dstpath, frontmatter):
+    def _make_categories_and_tags(self, dstpath, frontmatter):
         "calculate categories for content"
-        c = []
-        if 'categories' in frontmatter:
-            c.append(frontmatter['categories'])
-        c.append(x for x in os.path.dirname(dstpath).split('/') if x)
-        c = list(set(*c))
-        frontmatter['categories'] = c
+        c = set(*frontmatter.get('categories', []))
+        for cat in os.path.dirname(dstpath).split('/'):
+            if cat:
+                c.add(cat)
+        for cat in c:
+            if cat not in self.categories:
+                self.categories.append(cat)
+        frontmatter['categories'] = list(c)
+
+        tags = frontmatter.get('tags', [])
+        for tag in tags:
+            if tag not in self.tags:
+                self.tags.append(tag)
+        frontmatter['tags'] = tags
 
     def parse_generic(self, srcpath, dstpath, read, process, append):
         fm, content = read(srcpath)
         slug, dest = self._make_slug(srcpath, fm, dstpath)
-        self._make_categories(dstpath, fm)
-        # calculate destination
-        # if destination is up to date, skip
-        if not modified(srcpath, self._outdir(dest)):
-            log.debug("*f: %s -> %s" % (srcpath, self._outdir(dest)))
-            return
+        self._make_categories_and_tags(dstpath, fm)
         if 'date' in fm:
             fm['date'] = fm['date']
         else:
             mtime = os.path.getmtime(srcpath)
-            ltime = time.localtime(mtime)
-            fm['date'] = time.strftime("%Y-%m-%d %H:%M", ltime)
+            fm['date'] = format_date(mtime)
         fm['slug'] = slug
         fm['dest'] = dest
         fm['content'] = content
@@ -346,9 +392,18 @@ class Asg(object):
         result = template.render(postdata)
         item['content'] = processed
         self._dir(os.path.dirname(item['dest']))
-        log.info("+f: %s -> %s" % (item['srcpath'],
-                                   self._outdir(item['dest'])))
-        with open(self._outdir(item['dest']), 'w') as dest:
+        srcpath = item['srcpath']
+        outpath = self._outdir(item['dest'])
+        if not srcpath:
+            if os.path.isfile(outpath):
+                if open(outpath).read() == result.encode('utf-8'):
+                    log.debug("*f: %s -> %s" % (item['title'], outpath))
+                    return
+        elif not modified(srcpath, outpath):
+            log.debug("*f: %s -> %s" % (srcpath, outpath))
+            return
+        log.info("+f: %s -> %s" % (srcpath or item['title'], outpath))
+        with open(outpath, 'w') as dest:
             dest.write(result.encode('utf-8'))
 
     def process_markdown(self, content):

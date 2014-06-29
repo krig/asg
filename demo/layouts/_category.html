@@ -1,0 +1,14 @@
+{% include "head.html" %}
+
+<div class="content">
+
+<ul>
+{% for c in categories[page.title] %}
+<li><a href="{{c.url}}">{{c.title}}</a></li>
+{% endfor %}
+</ul>
+
+</div>
+
+{% include "foot.html" %}
+
